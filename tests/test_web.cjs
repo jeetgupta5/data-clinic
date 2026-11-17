@@ -1,0 +1,6 @@
+const test=require('node:test');const assert=require('node:assert/strict');const fs=require('node:fs');const {parseCSV,profile}=require('../web/profile.js');
+test('sample shows known quality problems',()=>{let r=profile(parseCSV(fs.readFileSync('examples/students.csv','utf8')));assert.equal(r.rows,7);assert.equal(r.missing,1);assert.equal(r.duplicates,1);assert.equal(r.outliers,1);assert.equal(r.columnProfiles[3].whitespace,1);});
+test('quoted delimiters, escaped quotes, CRLF and multiline cells',()=>{let d=parseCSV('\uFEFFa,b\r\n"hello, world","say ""hi""\nagain"\r\n');assert.deepEqual(d.rows,[['hello, world','say "hi"\nagain']]);});
+test('reject broken shapes, empty data, duplicate names and quoting',()=>{for(const s of ['', 'a,b\n','a,a\n1,2','a, a\n1,2','a,b\n1','a\n"unfinished','a\n"ok"oops','a\nx"y'])assert.throws(()=>parseCSV(s));});
+test('do not execute or interpret HTML in data',()=>{let d=parseCSV('name\n<img src=x onerror=alert(1)>');assert.equal(d.rows[0][0],'<img src=x onerror=alert(1)>');assert.equal(profile(d).columnProfiles[0].type,'text');});
+test('empty columns, finite inference and zero IQR',()=>{let r=profile(parseCSV('a,b,c\nNA,inf,1\nnull,2,1\nnone,3,1\nnan,4,1\nN/A,5,100'));assert.equal(r.columnProfiles[0].type,'empty');assert.equal(r.columnProfiles[1].type,'text');assert.equal(r.columnProfiles[2].stats.outliers,0);});
