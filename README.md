@@ -2,11 +2,16 @@
 
 Explainable dataset quality inspection, with opt-in cleaning previews and safe CSV exports.
 
-## Current milestone: interactive browser dashboard
+## DataClinic Studio
 
 The dashboard in `web/` runs entirely in the browser. It supports CSV selection
 and drag-and-drop, sample mode, quality summary cards, searchable column details,
 a first-five-rows preview, and JSON report download. No dataset is uploaded.
+
+The studio adds per-column cleaning and validation rules, row-level edit review,
+original record tracking, recipe import/export, undo, missingness charts and
+numeric histograms. See [Architecture](docs/ARCHITECTURE.md) and the
+[demo walkthrough](docs/DEMO.md).
 It uses vanilla JavaScript and CSS for a dependency-free first deployment; React
 and a FastAPI service remain optional future work, not current dependencies.
 
@@ -73,21 +78,36 @@ https://github.com/jeetgupta5/data-clinic. Browser dashboard added; private revi
 
 ## Cleaning studio
 
-Select transformations and click Preview cleaning. Every preview starts from the
-original dataset; it never accumulates previous edits. Changing options invalidates
-the preview. Original dashboard metrics remain unchanged. Download a separate CSV
-or JSON audit with options, before/after profiles, and ordered transformation counts.
+1. Select a CSV or the sample dataset.
+2. Configure each column independently: meaning, whitespace trim, missing-token
+   normalization, keep/drop/median/mode/custom filling, required, unique and ranges.
+3. Optionally remove exact transformed duplicate rows.
+4. Preview before/after counts and validation violations. Inspect paginated cell
+   edits, removed source records and remaining validation issues.
+5. Download cleaned CSV, audit JSON or a versioned recipe. The original stays intact.
 
-Order: trim surrounding cell whitespace, normalize missing tokens, handle missing
-values, then deduplicate. Missing treatment can keep values, drop incomplete rows,
-or fill numeric columns with median and text columns with the exact mode (first
-observed breaks ties). Entirely missing columns are skipped with an explanation.
-Statistics are computed before deduplication. Outliers are not removed. Filling
-all numeric columns may be inappropriate for IDs or a later ML train/test split;
-review choices before export. Fit imputation only on training data for ML evaluation.
+`Identifier` blocks inferred filling; it does not coerce the data. Dates validate
+YYYY-MM-DD calendar dates. Entirely missing columns need a custom replacement.
+Recipes require exact column names/order and contain custom values, not rows.
+Changing rules invalidates the preview. Undo restores up to 30 prior rule edits.
 
-CSV export quotes all cells, escapes quotes, uses CRLF and UTF-8 BOM, and prefixes
-potential spreadsheet formulas with an apostrophe (including headers, negative
-numbers and leading whitespace before =, +, -, @). Preview values do not change;
-the audit reports the protection count. Header-only results are explicitly shown.
-Run cleaning regressions: `node --test tests/test_clean.cjs`.
+Run all JavaScript tests: `node --test tests/*.cjs`.
+Run Python tests: `python -m unittest discover -s tests -v`.
+GitHub Actions runs these checks for pushes and pull requests.
+
+### Export and limits
+
+CSV exports quote every field and protect potential spreadsheet formulas with an
+apostrophe, including negative numeric strings and headers. This can change
+exported values relative to the preview. Detailed changes and validation findings
+are capped at 2,000 each; aggregate counts cover the full dataset. Source record
+numbers include the header and are not physical line numbers. See the architecture
+notes for all transformation and validation semantics.
+
+The current hosted review site requires the owner's ChatGPT sign-in:
+https://dataclinic-jeet-gupta.placidalgae.chatgpt.site
+It is not a public recruiter demo. Anyone can clone this repository and serve
+`web/` locally without an account. No paid API or environment secrets are needed.
+
+ML train/test splitting, train-only imputation, configurable missing-token sets,
+Excel support and background-worker processing remain future work.

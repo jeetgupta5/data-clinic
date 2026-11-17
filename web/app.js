@@ -13,6 +13,7 @@ $('browse').onclick=()=>$('file').click();$('file').onchange=e=>{readFile(e.targ
 const zone=$('dropzone');['dragenter','dragover'].forEach(event=>zone.addEventListener(event,e=>{e.preventDefault();zone.classList.add('drag');}));['dragleave','drop'].forEach(event=>zone.addEventListener(event,e=>{e.preventDefault();zone.classList.remove('drag');}));zone.addEventListener('drop',e=>readFile(e.dataTransfer.files[0]));
 function render(){
  resetCleaning();
+ renderCharts();
  const {report:r,name,data}=current;$('results').hidden=false;$('empty').hidden=true;$('detail').hidden=true;$('search').value='';$('filename').textContent=name;$('analysed').textContent=new Date().toLocaleTimeString([],{hour:'2-digit',minute:'2-digit'});
  ['rows','missing','duplicates','outliers'].forEach(id=>$(id).textContent=fmt(r[id]));$('missing-sub').textContent=`${fmt(r.missing/(r.rows*r.columns)*100)}% of all cells`;
  const present=(1-r.missing/(r.rows*r.columns))*100;$('complete').textContent=fmt(present)+'%';$('donut').style.background=`conic-gradient(#6c9876 0 ${present}%,#edf0e8 ${present}% 100%)`;$('shape').textContent=`${fmt(r.columns)} columns across ${fmt(r.rows)} records`;
@@ -25,25 +26,63 @@ $('search').oninput=renderColumns;
 function detail(i){let c=current.report.columnProfiles[i],box=$('detail');box.replaceChildren();let close=element('button','×');close.setAttribute('aria-label','Close column details');close.onclick=()=>box.hidden=true;box.append(close,element('strong',c.name));let text=c.stats?`Minimum: ${fmt(c.stats.min)} · Median: ${fmt(c.stats.median)} · Maximum: ${fmt(c.stats.max)} · IQR: ${fmt(c.stats.iqr)}`:`${fmt(c.numericLike)} finite numeric-like cells among nonmissing values.`;box.append(element('p',text),element('p',`${fmt(c.whitespace)} nonmissing cells have surrounding whitespace. Values are preserved. Outlier flags require review; identifiers may be inferred as numeric.`));box.hidden=false;box.scrollIntoView({behavior:'smooth',block:'nearest'});}
 $('export').onclick=()=>{if(!current)return;const blob=new Blob([JSON.stringify({dataset:current.name,...current.report},null,2)],{type:'application/json'}),url=URL.createObjectURL(blob),a=document.createElement('a');a.href=url;a.download='dataclinic-report.json';a.click();setTimeout(()=>URL.revokeObjectURL(url),1000);};
 
-let cleaned=null;
-const cleaningIds=['clean-trim','clean-normalize','clean-dedupe','clean-missing'];
-function resetCleaning(){cleaned=null;['clean-trim','clean-normalize','clean-dedupe'].forEach(id=>$(id).checked=false);$('clean-missing').value='keep';invalidateCleaning();}
-function invalidateCleaning(){cleaned=null;$('clean-result').hidden=true;$('clean-state').textContent='Preview needed. Original dashboard metrics remain unchanged.';}
-cleaningIds.forEach(id=>$(id).onchange=invalidateCleaning);
-$('clean-reset').onclick=resetCleaning;
+let cleaned=null,rules=null,ruleHistory=[],reviewPage=0,recipeRequest=0;
+const A=DataClinicAdvanced;
 function downloadFile(text,type,name){const url=URL.createObjectURL(new Blob([text],{type}));const a=document.createElement('a');a.href=url;a.download=name;a.click();setTimeout(()=>URL.revokeObjectURL(url),1000);}
+function invalidateCleaning(){cleaned=null;$('clean-result').hidden=true;$('clean-state').textContent='Rules changed. Preview again to review this configuration.';}
+function resetCleaning(){recipeRequest++;rules=A.defaults(current.data.headers);ruleHistory=[];renderRules();invalidateCleaning();}
+function editRule(change){ruleHistory.push(JSON.stringify(rules));if(ruleHistory.length>30)ruleHistory.shift();change();renderRules();invalidateCleaning();}
+function renderRules(){
+ $('rules-body').replaceChildren();rules.columns.forEach((c,i)=>{
+  const tr=element('tr');tr.append(element('td',c.name));
+  function control(key,kind,choices){const td=element('td'),input=document.createElement(kind==='select'?'select':'input');input.setAttribute('aria-label',`${c.name}: ${key}`);
+   if(kind==='select'){choices.forEach(([value,label])=>{const opt=element('option',label);opt.value=value;input.append(opt);});input.value=c[key];}
+   else if(kind==='checkbox'){input.type='checkbox';input.checked=c[key];}
+   else{input.type='text';input.value=c[key];if(['min','max'].includes(key)){input.className='bound';input.inputMode='decimal';}}
+   if(key==='value'){input.disabled=c.missing!=='custom';input.placeholder='Replacement';}
+   if(['min','max'].includes(key))input.placeholder='None';
+   if(kind==='text'){
+    let recorded=false;input.onfocus=()=>{recorded=false;};input.oninput=()=>{if(!recorded){ruleHistory.push(JSON.stringify(rules));if(ruleHistory.length>30)ruleHistory.shift();recorded=true;}rules.columns[i][key]=input.value;$('rules-undo').disabled=false;invalidateCleaning();};
+   }else input.onchange=()=>{const value=kind==='checkbox'?input.checked:input.value;editRule(()=>{rules.columns[i][key]=value;if(key==='type'&&value==='id'&&['median','mode'].includes(rules.columns[i].missing))rules.columns[i].missing='keep';});};td.append(input);tr.append(td);
+  }
+  control('type','select',[['auto','Auto'],['id','Identifier'],['text','Text'],['number','Number'],['date','ISO date']]);control('trim','checkbox');control('normalize','checkbox');
+  control('missing','select',[['keep','Keep missing'],['drop','Drop row'],['median','Fill median'],['mode','Fill mode'],['custom','Custom value']].filter(([v])=>c.type!=='id'||!['median','mode'].includes(v)));
+  control('value','text');control('required','checkbox');control('unique','checkbox');control('min','text');control('max','text');$('rules-body').append(tr);
+ });$('clean-dedupe').checked=rules.deduplicate;$('rules-undo').disabled=!ruleHistory.length;
+}
+$('clean-dedupe').onchange=()=>{const checked=$('clean-dedupe').checked;editRule(()=>rules.deduplicate=checked);};
+$('clean-reset').onclick=()=>{if(!current)return;editRule(()=>rules=A.defaults(current.data.headers));};
+$('rules-undo').onclick=()=>{if(!ruleHistory.length)return;rules=JSON.parse(ruleHistory.pop());renderRules();invalidateCleaning();};
+$('recipe-save').onclick=()=>{if(!current)return;try{const saved=A.recipe(rules,current.data.headers);downloadFile(JSON.stringify(saved,null,2),'application/json','dataclinic-recipe.json');$('clean-state').textContent='Recipe exported. It contains rules and any custom replacement values, not dataset rows.';}catch(e){$('clean-state').textContent=e.message;}};
+$('recipe-load').onclick=()=>$('recipe-file').click();
+$('recipe-file').onchange=async e=>{const file=e.target.files[0];e.target.value='';if(!file||!current)return;const id=++recipeRequest;try{if(file.size>256*1024)throw Error('Recipe must be at most 256 KiB.');const text=await file.text();if(id!==recipeRequest)return;const parsed=A.recipe(JSON.parse(text),current.data.headers);editRule(()=>rules=parsed);$('clean-state').textContent='Recipe imported. Review the rules, then preview cleaning.';}catch(err){if(id===recipeRequest)$('clean-state').textContent='Recipe not imported: '+err.message;}};
+function tableData(table,headers,rows){table.replaceChildren();const head=element('thead'),hr=element('tr');headers.forEach(h=>hr.append(element('th',h)));head.append(hr);const body=element('tbody');rows.forEach(values=>{const tr=element('tr');values.forEach(v=>tr.append(element('td',String(v))));body.append(tr);});table.append(head,body);}
 $('clean-preview').onclick=()=>{
  if(!current)return;
  try{
- cleaned=DataClinicCleaning.clean(current.data,{trim:$('clean-trim').checked,normalize:$('clean-normalize').checked,deduplicate:$('clean-dedupe').checked,missing:$('clean-missing').value});
- const before=current.report,after=cleaned.report;
- $('clean-comparison').replaceChildren();[['Rows',before.rows,after.rows],['Missing cells',before.missing,after.missing],['Duplicate rows',before.duplicates,after.duplicates],['Potential outliers',before.outliers,after.outliers]].forEach(([label,b,a])=>{const tr=element('tr');tr.append(element('td',label),element('td',fmt(b)),element('td',fmt(a)));$('clean-comparison').append(tr);});
+ cleaned=A.run(current.data,rules);const b=current.report,a=cleaned.report;
+ tableData($('clean-comparison'),['Measure','Original','Cleaned preview'],[['Rows',b.rows,a.rows],['Missing cells',b.missing,a.missing],['Duplicate rows',b.duplicates,a.duplicates],['Potential outliers',b.outliers,a.outliers],['Validation violations',cleaned.validation.before.total,cleaned.validation.after.total]]);
  $('clean-log').replaceChildren();if(!cleaned.log.length)$('clean-log').append(element('p','No transformations selected. Preview matches the original.','muted small'));
- cleaned.log.forEach(entry=>{const block=element('div',undefined,'log-entry');block.append(element('strong',entry.step),element('p',`${fmt(entry.cellsChanged)} cells changed · ${fmt(entry.rowsRemoved)} rows removed`));if(entry.notes)block.append(element('p',entry.notes));$('clean-log').append(block);});
- const table=$('clean-table');table.replaceChildren();let head=element('thead'),hr=element('tr');cleaned.data.headers.forEach(h=>hr.append(element('th',h)));head.append(hr);let body=element('tbody');cleaned.data.rows.slice(0,5).forEach(row=>{const tr=element('tr');row.forEach(v=>tr.append(element('td',v)));body.append(tr);});table.append(head,body);
- $('clean-empty').hidden=after.rows>0;const exported=DataClinicCleaning.exportCSV(cleaned.data);$('clean-protection').textContent=`${fmt(exported.protectedCells)} exported cells or headers will receive spreadsheet formula protection.`;
- $('clean-result').hidden=false;$('clean-state').textContent=`Preview ready: ${fmt(after.rows)} rows remain. Original dataset unchanged.`;
- }catch(e){cleaned=null;$('clean-result').hidden=true;$('clean-state').textContent=e.message;}
+ cleaned.log.forEach(entry=>{const block=element('div',undefined,'log-entry');block.append(element('strong',entry.step),element('p',`${fmt(entry.cellsChanged)} cell edits · ${fmt(entry.rowsRemoved)} rows removed`));if(entry.notes)block.append(element('p',entry.notes));$('clean-log').append(block);});
+ tableData($('clean-table'),['Source record',...cleaned.data.headers],cleaned.data.rows.slice(0,5).map((r,i)=>[cleaned.sourceRows[i],...r]));
+ $('clean-empty').hidden=a.rows>0;const out=DataClinicCleaning.exportCSV(cleaned.data);$('clean-protection').textContent=`${fmt(out.protectedCells)} exported cells or headers will receive spreadsheet formula protection.`;
+ $('clean-result').hidden=false;$('clean-state').textContent=`Preview ready: ${fmt(a.rows)} rows remain; ${fmt(cleaned.changedCells)} distinct cells edited; ${fmt(cleaned.removed.length)} rows removed. Original unchanged.`;reviewPage=0;renderReview();
+ }catch(e){invalidateCleaning();$('clean-state').textContent=e.message;}
 };
-$('clean-download').onclick=()=>{if(!cleaned)return;downloadFile(DataClinicCleaning.exportCSV(cleaned.data).text,'text/csv;charset=utf-8',current.name.replace(/\.csv$/i,'')+'-cleaned.csv');};
-$('clean-audit').onclick=()=>{if(!cleaned)return;downloadFile(JSON.stringify({dataset:current.name,options:cleaned.options,before:current.report,after:cleaned.report,transformations:cleaned.log,exportProtection:{policy:'Prefix dangerous spreadsheet formula cells and headers with apostrophe',cells:DataClinicCleaning.exportCSV(cleaned.data).protectedCells}},null,2),'application/json','dataclinic-cleaning-log.json');};
+function renderReview(){if(!cleaned)return;const type=$('review-filter').value,items=type==='changes'?cleaned.changes:type==='removed'?cleaned.removed:cleaned.validation.after.issues,limit=20,pages=Math.max(1,Math.ceil(items.length/limit));reviewPage=Math.min(reviewPage,pages-1);const part=items.slice(reviewPage*limit,(reviewPage+1)*limit);
+ if(type==='changes'){tableData($('review-table'),['Source record','Column','Before','After','Step'],part.map(c=>[c.row,c.column,c.before,c.after,c.step]));const rows=$('review-table').querySelectorAll('tbody tr');rows.forEach(row=>{row.children[2].className='change-before';row.children[3].className='change-after';});}
+ if(type==='removed')tableData($('review-table'),['Source record','Reason'],part.map(c=>[c.row,c.reason]));
+ if(type==='validation')tableData($('review-table'),['Source record','Column','Value','Violation'],part.map(c=>[cleaned.sourceRows[c.row-2],c.column,c.value,c.message]));
+ $('review-page').textContent=`${reviewPage+1} / ${pages}`;$('review-prev').disabled=reviewPage===0;$('review-next').disabled=reviewPage>=pages-1;
+ const truncated=type==='changes'?cleaned.changesTruncated:type==='validation'?cleaned.validation.after.truncated:false;
+ $('review-note').textContent=(items.length?`${fmt(items.length)} ${type==='changes'?'cell edits':type==='removed'?'removed rows':'violations'} available. `:'No items in this view. ')+(truncated?'Details limited to the first 2,000; aggregate counts cover all records. ':'')+'Source record numbers count CSV records including the header; multiline fields may span multiple file lines.';
+}
+$('review-filter').onchange=()=>{reviewPage=0;renderReview();};$('review-prev').onclick=()=>{reviewPage--;renderReview();};$('review-next').onclick=()=>{reviewPage++;renderReview();};
+$('clean-download').onclick=()=>{if(cleaned)downloadFile(DataClinicCleaning.exportCSV(cleaned.data).text,'text/csv;charset=utf-8',current.name.replace(/\.csv$/i,'')+'-cleaned.csv');};
+$('clean-audit').onclick=()=>{if(!cleaned)return;const {data,...audit}=cleaned;downloadFile(JSON.stringify({dataset:current.name,before:current.report,...audit,exportProtection:{policy:'Apostrophe prefix for spreadsheet formulas',cells:DataClinicCleaning.exportCSV(data).protectedCells}},null,2),'application/json','dataclinic-cleaning-log.json');};
+function renderCharts(){
+ const cols=current.report.columnProfiles;$('missing-chart').replaceChildren();[...cols].sort((a,b)=>b.missing-a.missing).slice(0,12).forEach(c=>{const row=element('div',undefined,'missing-row'),track=element('div',undefined,'bar-track'),fill=element('div',undefined,'bar-fill');fill.style.width=c.missingPercent+'%';track.append(fill);const name=element('span',c.name);name.title=c.name;row.append(name,track,element('span',fmt(c.missingPercent)+'%'));$('missing-chart').append(row);});
+ const select=$('distribution-column');select.replaceChildren();cols.forEach((c,i)=>{if(c.type==='numeric'){const opt=element('option',c.name);opt.value=String(i);select.append(opt);}});if(!select.options.length){const opt=element('option','No numeric columns');opt.value='';select.append(opt);}renderDistribution();
+}
+function renderDistribution(){const value=$('distribution-column').value;$('histogram').replaceChildren();if(value===''){tableData($('histogram-table'),['Information'],[['No fully numeric columns in this dataset.']]);return;}const index=Number(value),bins=A.histogram(current.data.rows.map(r=>r[index])),max=Math.max(1,...bins.map(b=>b.count));$('distribution-title').textContent=current.data.headers[index]+' · distribution';$('histogram').setAttribute('aria-label',`Histogram of ${current.data.headers[index]}; exact bin counts in the table below.`);bins.forEach(b=>{const bar=element('div',undefined,'hist-bin');bar.style.height=(b.count/max*85)+'%';bar.title=`${fmt(b.low)} to ${fmt(b.high)}: ${b.count} records`;bar.append(element('span',String(b.count)));$('histogram').append(bar);});tableData($('histogram-table'),['Bin range (last includes upper bound)','Records'],bins.map(b=>[`${fmt(b.low)} – ${fmt(b.high)}`,b.count]));}
+$('distribution-column').onchange=renderDistribution;
