@@ -12,6 +12,7 @@ async function readFile(file){if(!file)return;const id=++request;if(file.size>5*
 $('browse').onclick=()=>$('file').click();$('file').onchange=e=>{readFile(e.target.files[0]);e.target.value='';};$('sample').onclick=()=>{request++;load(SAMPLE,'students_sample.csv');};
 const zone=$('dropzone');['dragenter','dragover'].forEach(event=>zone.addEventListener(event,e=>{e.preventDefault();zone.classList.add('drag');}));['dragleave','drop'].forEach(event=>zone.addEventListener(event,e=>{e.preventDefault();zone.classList.remove('drag');}));zone.addEventListener('drop',e=>readFile(e.dataTransfer.files[0]));
 function render(){
+ resetCleaning();
  const {report:r,name,data}=current;$('results').hidden=false;$('empty').hidden=true;$('detail').hidden=true;$('search').value='';$('filename').textContent=name;$('analysed').textContent=new Date().toLocaleTimeString([],{hour:'2-digit',minute:'2-digit'});
  ['rows','missing','duplicates','outliers'].forEach(id=>$(id).textContent=fmt(r[id]));$('missing-sub').textContent=`${fmt(r.missing/(r.rows*r.columns)*100)}% of all cells`;
  const present=(1-r.missing/(r.rows*r.columns))*100;$('complete').textContent=fmt(present)+'%';$('donut').style.background=`conic-gradient(#6c9876 0 ${present}%,#edf0e8 ${present}% 100%)`;$('shape').textContent=`${fmt(r.columns)} columns across ${fmt(r.rows)} records`;
@@ -23,3 +24,26 @@ function renderColumns(){if(!current)return;const query=$('search').value.toLowe
 $('search').oninput=renderColumns;
 function detail(i){let c=current.report.columnProfiles[i],box=$('detail');box.replaceChildren();let close=element('button','×');close.setAttribute('aria-label','Close column details');close.onclick=()=>box.hidden=true;box.append(close,element('strong',c.name));let text=c.stats?`Minimum: ${fmt(c.stats.min)} · Median: ${fmt(c.stats.median)} · Maximum: ${fmt(c.stats.max)} · IQR: ${fmt(c.stats.iqr)}`:`${fmt(c.numericLike)} finite numeric-like cells among nonmissing values.`;box.append(element('p',text),element('p',`${fmt(c.whitespace)} nonmissing cells have surrounding whitespace. Values are preserved. Outlier flags require review; identifiers may be inferred as numeric.`));box.hidden=false;box.scrollIntoView({behavior:'smooth',block:'nearest'});}
 $('export').onclick=()=>{if(!current)return;const blob=new Blob([JSON.stringify({dataset:current.name,...current.report},null,2)],{type:'application/json'}),url=URL.createObjectURL(blob),a=document.createElement('a');a.href=url;a.download='dataclinic-report.json';a.click();setTimeout(()=>URL.revokeObjectURL(url),1000);};
+
+let cleaned=null;
+const cleaningIds=['clean-trim','clean-normalize','clean-dedupe','clean-missing'];
+function resetCleaning(){cleaned=null;['clean-trim','clean-normalize','clean-dedupe'].forEach(id=>$(id).checked=false);$('clean-missing').value='keep';invalidateCleaning();}
+function invalidateCleaning(){cleaned=null;$('clean-result').hidden=true;$('clean-state').textContent='Preview needed. Original dashboard metrics remain unchanged.';}
+cleaningIds.forEach(id=>$(id).onchange=invalidateCleaning);
+$('clean-reset').onclick=resetCleaning;
+function downloadFile(text,type,name){const url=URL.createObjectURL(new Blob([text],{type}));const a=document.createElement('a');a.href=url;a.download=name;a.click();setTimeout(()=>URL.revokeObjectURL(url),1000);}
+$('clean-preview').onclick=()=>{
+ if(!current)return;
+ try{
+ cleaned=DataClinicCleaning.clean(current.data,{trim:$('clean-trim').checked,normalize:$('clean-normalize').checked,deduplicate:$('clean-dedupe').checked,missing:$('clean-missing').value});
+ const before=current.report,after=cleaned.report;
+ $('clean-comparison').replaceChildren();[['Rows',before.rows,after.rows],['Missing cells',before.missing,after.missing],['Duplicate rows',before.duplicates,after.duplicates],['Potential outliers',before.outliers,after.outliers]].forEach(([label,b,a])=>{const tr=element('tr');tr.append(element('td',label),element('td',fmt(b)),element('td',fmt(a)));$('clean-comparison').append(tr);});
+ $('clean-log').replaceChildren();if(!cleaned.log.length)$('clean-log').append(element('p','No transformations selected. Preview matches the original.','muted small'));
+ cleaned.log.forEach(entry=>{const block=element('div',undefined,'log-entry');block.append(element('strong',entry.step),element('p',`${fmt(entry.cellsChanged)} cells changed · ${fmt(entry.rowsRemoved)} rows removed`));if(entry.notes)block.append(element('p',entry.notes));$('clean-log').append(block);});
+ const table=$('clean-table');table.replaceChildren();let head=element('thead'),hr=element('tr');cleaned.data.headers.forEach(h=>hr.append(element('th',h)));head.append(hr);let body=element('tbody');cleaned.data.rows.slice(0,5).forEach(row=>{const tr=element('tr');row.forEach(v=>tr.append(element('td',v)));body.append(tr);});table.append(head,body);
+ $('clean-empty').hidden=after.rows>0;const exported=DataClinicCleaning.exportCSV(cleaned.data);$('clean-protection').textContent=`${fmt(exported.protectedCells)} exported cells or headers will receive spreadsheet formula protection.`;
+ $('clean-result').hidden=false;$('clean-state').textContent=`Preview ready: ${fmt(after.rows)} rows remain. Original dataset unchanged.`;
+ }catch(e){cleaned=null;$('clean-result').hidden=true;$('clean-state').textContent=e.message;}
+};
+$('clean-download').onclick=()=>{if(!cleaned)return;downloadFile(DataClinicCleaning.exportCSV(cleaned.data).text,'text/csv;charset=utf-8',current.name.replace(/\.csv$/i,'')+'-cleaned.csv');};
+$('clean-audit').onclick=()=>{if(!cleaned)return;downloadFile(JSON.stringify({dataset:current.name,options:cleaned.options,before:current.report,after:cleaned.report,transformations:cleaned.log,exportProtection:{policy:'Prefix dangerous spreadsheet formula cells and headers with apostrophe',cells:DataClinicCleaning.exportCSV(cleaned.data).protectedCells}},null,2),'application/json','dataclinic-cleaning-log.json');};
